@@ -1,8 +1,19 @@
 from PIL import Image
-# import matplotlib.pyplot as plt
-# import numpy as np
+from sklearn.metrics import accuracy_score, roc_auc_score, f1_score, mean_squared_error, mean_absolute_error, \
+    r2_score, confusion_matrix
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression, LinearRegression
+from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+from sklearn.svm import SVC, SVR
+from sklearn.naive_bayes import GaussianNB
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from catboost import CatBoostClassifier, CatBoostRegressor
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
-# import seaborn as sns
+import plotly.express as px
+import plotly.graph_objects as go
+import seaborn as sns
 import streamlit as st
 
 st.set_page_config(page_title="Учебная практика Лакизы Александра",
@@ -384,15 +395,521 @@ with col2:
                 "- MAE\n"
                 "- $R^2$")
 st.markdown("### Accuracy")
-st.markdown(r"$$Accuracy = \frac{TP + TN}{TP + TN + FP + FN}$$")
+st.latex(r"Accuracy = \frac{TP + TN}{TP + TN + FP + FN}")
 st.markdown("* $TP$ - True Positive (Классификатор верно предсказал единицу)\n"
             "* $TN$ - True Negative (Классификатор верно предсказал ноль)\n"
             "* $FP$ - False Positive (Ошибка 1-го рода или $y_{pred} = 1$, хотя $y_{true} = 0$)\n"
             "* $FN$ - False Negative (Ошибка 2-го рода или $y_{pred} = 0$, хотя $y_{true} = 1$)")
+st.markdown("Измеряется от 0 до 1. Чем ближе к 1, тем лучше")
 
 st.markdown("### ROC AUC")
+st.markdown("__ROC AUC__ - это площадь под ROC-кривой (Area under ROC-curve)")
+st.markdown("ROC кривая - кривая в координатах $FPR$ (False Positive Rate), $TPR$ (True Positive Rate) ")
+st.markdown(r"* $FPR =  \frac{FP}{FP + TN}$ (False Positive Rate)")
+st.markdown(r"* $TPR = \frac{TP}{TP + FN}$ (True Positive Rate)")
+st.markdown("Измеряется от 0 до 1. Чем ближе к 1, тем лучше")
+
 st.markdown("### F-мера (F1 score)")
+st.latex(r"F1 = \frac{2 * Precision * Recall}{Precision + Recall}")
+st.markdown(r"* $Precision = \frac{TP}{TP + FP}$")
+st.markdown(r"* $Recall = \frac{TP}{TP + FN}$ (Recall = True Positive Rate)")
+st.markdown("Измеряется от 0 до 1. Чем ближе к 1, тем лучше")
 
 st.markdown("### Root Mean Squared Error (RMSE)")
+st.latex(r"RMSE = \sqrt{\frac{1}{n} * \sum_{i=1}^{n} (y_i - \hat{y_i})^2}")
+st.markdown(r"* $\hat{y_i}$ - значение целевой переменной, предсказанное регрессией")
+st.markdown("* $y_i$ - истинное значение целевой переменной")
+st.markdown("* $n$ - количество наблюдений")
+st.markdown(r"Измеряется от 0 до $\infty$. Чем ближе к 0, тем лучше (однако стоит учитывать "
+            r"истинные значения целевой переменной)")
+
+
+def rmse(y_true, y_pred):
+    return mean_squared_error(y_true, y_pred) ** (1 / 2)
+
+
 st.markdown("### Mean Absolute Error (MAE)")
+st.latex(r"MAE = \frac{1}{n} * \sum_{i=1}^{n} \lvert{y_i - \hat{y_i}\rvert}")
+st.markdown(r"Измеряется от 0 до $\infty$. Чем ближе к 0, тем лучше (однако стоит учитывать "
+            r"истинные значения целевой переменной)")
+
 st.markdown("### $R^2$")
+st.latex(r"R^2 = \frac{\sum (\hat{y_i} - \bar{y})^2}{\sum (y_i - \bar{y})^2}")
+st.markdown(r"* $\bar{y}$ - выборочное среднее истинных значений $y$")
+st.markdown("Обычно измеряется от 0 до 1, однако может быть и отрицательным (ага, казалось бы $R$ в __квадрате__. "
+            "Отрицательное значение говорит о совсем плохой модели регрессии")
+
+st.markdown("## Теперь пообучаем модельки")
+st.markdown("#### Начнём с [датасета про доход людей](https://www.kaggle.com/wenruliu/adult-income-dataset)")
+st.markdown("Нам надо предсказать зарабатывает ли человек больше 50 тысяч $ в год")
+
+
+@st.cache(ttl=864000)
+def get_dfs():
+    adult_df = pd.read_csv('data/adult.csv')
+    credit_df = pd.read_csv('data/UCI_Credit_Card.csv')
+    diam_df = pd.read_csv('data/diamonds.csv')
+    house_df = pd.read_csv('data/kc_house_data.csv')
+
+    credit_df = pd.DataFrame(credit_df.drop("ID", axis=1))
+    diam_df = pd.DataFrame(diam_df.drop("Unnamed: 0", axis=1))
+
+    adult_df['income'] = adult_df['income'].map({'<=50K': 0, '>50K': 1})
+    adult_df['gender'] = adult_df['gender'].map({'Male': 1, 'Female': 0})
+
+    return adult_df, credit_df, diam_df, house_df
+
+
+adult_df, credit_df, diam_df, house_df = get_dfs()
+
+
+@st.cache(ttl=864000)
+def prepare_adults(adult_df):
+    X = pd.concat(
+        [adult_df[['age', 'capital-gain', 'capital-loss', 'fnlwgt', 'educational-num', 'gender', 'hours-per-week']],
+         pd.get_dummies(adult_df['workclass'], prefix='work'),
+         pd.get_dummies(adult_df['education'], prefix='edu'),
+         pd.get_dummies(adult_df['marital-status']),
+         pd.get_dummies(adult_df['occupation'], prefix='job'),
+         pd.get_dummies(adult_df['relationship']),
+         pd.get_dummies(adult_df['race']),
+         pd.get_dummies(adult_df['native-country'], prefix='nation')], axis=1)
+    y = adult_df['income']
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33, random_state=42)
+
+    return X_train, X_test, y_train, y_test
+
+
+X_train_adult, X_test_adult, y_train_adult, y_test_adult = prepare_adults(adult_df)
+adults_results = {'classifier': ['Log-Reg', 'k-NN', 'SVM', 'Naive-Bayes', 'Random-Forest', 'Grad-Boost'],
+                  'accuracy': [],
+                  'roc auc': [],
+                  'f1': []}
+
+
+def vis_clf_metrics(ac, ra, f):
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric(label='Accuracy', value=ac)
+    with col2:
+        st.metric(label='ROC AUC', value=ra)
+    with col3:
+        st.metric(label='F1', value=f)
+
+
+def plot_cm(cf_matrix, colormap='Blues'):
+    fig, ax = plt.subplots()
+    ax = sns.heatmap(cf_matrix, annot=True, cmap=colormap, fmt='.0f', )
+
+    ax.set_title('Confusion Matrix\n')
+    ax.set_xlabel('\nПредсказанные значения')
+    ax.set_ylabel('Истинные значения')
+
+    ax.xaxis.set_ticklabels(['0', '1'])
+    ax.yaxis.set_ticklabels(['0', '1'])
+
+    additional_texts = ['(True Negative)', '(False Positive)', '(False Negative)', '(True Positive)']
+    for text_elt, additional_text in zip(ax.texts, additional_texts):
+        ax.text(*text_elt.get_position(), '\n' + additional_text, color=text_elt.get_color(),
+                ha='center', va='top', size=10)
+
+    return fig
+
+
+def make_clf1_result(ac, ra, f):
+    adults_results['accuracy'].append(ac)
+    adults_results['roc auc'].append(ra)
+    adults_results['f1'].append(f)
+
+
+@st.cache(ttl=864000)
+def log_clf(X_train, X_test, y_train, y_test):
+    log_reg = LogisticRegression()
+    log_reg.fit(X_train, y_train)
+    log_reg_preds = log_reg.predict(X_test)
+    return (str(round(accuracy_score(y_test, log_reg_preds), 3)), str(round(roc_auc_score(y_test, log_reg_preds), 3)),
+            str(round(f1_score(y_test, log_reg_preds), 3)), confusion_matrix(y_test, log_reg_preds))
+
+
+acc, roc_auc, f1, cm = log_clf(X_train_adult, X_test_adult, y_train_adult, y_test_adult)
+make_clf1_result(acc, roc_auc, f1)
+st.markdown("#### Логистическая регрессия")
+vis_clf_metrics(acc, roc_auc, f1)
+st.pyplot(plot_cm(cm))
+
+
+@st.cache(ttl=864000)
+def knn_clf(X_train, X_test, y_train, y_test):
+    knn_clf = KNeighborsClassifier()
+    knn_clf.fit(X_train, y_train)
+    preds = knn_clf.predict(X_test)
+    return (str(round(accuracy_score(y_test, preds), 3)), str(round(roc_auc_score(y_test, preds), 3)),
+            str(round(f1_score(y_test, preds), 3)), confusion_matrix(y_test, preds))
+
+
+acc, roc_auc, f1, cm = knn_clf(X_train_adult, X_test_adult, y_train_adult, y_test_adult)
+make_clf1_result(acc, roc_auc, f1)
+st.markdown("#### k-ближайших соседей")
+vis_clf_metrics(acc, roc_auc, f1)
+st.pyplot(plot_cm(cm))
+
+
+@st.cache(ttl=864000)
+def svm_clf(X_train, X_test, y_train, y_test):
+    clf = SVC()
+    clf.fit(X_train, y_train)
+    preds = clf.predict(X_test)
+    return (str(round(accuracy_score(y_test, preds), 3)), str(round(roc_auc_score(y_test, preds), 3)),
+            str(round(f1_score(y_test, preds), 3)), confusion_matrix(y_test, preds))
+
+
+acc, roc_auc, f1, cm = svm_clf(X_train_adult, X_test_adult, y_train_adult, y_test_adult)
+make_clf1_result(acc, roc_auc, f1)
+st.markdown("#### Метод опорных векторов")
+vis_clf_metrics(acc, roc_auc, f1)
+st.pyplot(plot_cm(cm))
+
+
+@st.cache(ttl=864000)
+def bayes_clf(X_train, X_test, y_train, y_test):
+    clf = GaussianNB()
+    clf.fit(X_train, y_train)
+    preds = clf.predict(X_test)
+    return (str(round(accuracy_score(y_test, preds), 3)), str(round(roc_auc_score(y_test, preds), 3)),
+            str(round(f1_score(y_test, preds), 3)), confusion_matrix(y_test, preds))
+
+
+acc, roc_auc, f1, cm = bayes_clf(X_train_adult, X_test_adult, y_train_adult, y_test_adult)
+make_clf1_result(acc, roc_auc, f1)
+st.markdown("#### Наивный Байесовский классификатор")
+vis_clf_metrics(acc, roc_auc, f1)
+st.pyplot(plot_cm(cm))
+
+
+@st.cache(ttl=864000)
+def rf_clf(X_train, X_test, y_train, y_test):
+    clf = RandomForestClassifier(random_state=42)
+    clf.fit(X_train, y_train)
+    preds = clf.predict(X_test)
+    return (str(round(accuracy_score(y_test, preds), 3)), str(round(roc_auc_score(y_test, preds), 3)),
+            str(round(f1_score(y_test, preds), 3)), confusion_matrix(y_test, preds))
+
+
+acc, roc_auc, f1, cm = rf_clf(X_train_adult, X_test_adult, y_train_adult, y_test_adult)
+make_clf1_result(acc, roc_auc, f1)
+st.markdown("#### Случайный лес")
+vis_clf_metrics(acc, roc_auc, f1)
+st.pyplot(plot_cm(cm))
+
+
+@st.cache(ttl=864000)
+def gb_clf(X_train, X_test, y_train, y_test):
+    clf = CatBoostClassifier(random_seed=42, verbose=False)
+    clf.fit(X_train, y_train)
+    preds = clf.predict(X_test)
+    return (str(round(accuracy_score(y_test, preds), 3)), str(round(roc_auc_score(y_test, preds), 3)),
+            str(round(f1_score(y_test, preds), 3)), confusion_matrix(y_test, preds))
+
+
+acc, roc_auc, f1, cm = gb_clf(X_train_adult, X_test_adult, y_train_adult, y_test_adult)
+make_clf1_result(acc, roc_auc, f1)
+st.markdown("#### Градиентный бустинг")
+vis_clf_metrics(acc, roc_auc, f1)
+st.pyplot(plot_cm(cm))
+
+st.markdown("##### Сводная таблица по метрикам классификации")
+st.table(adults_results)
+
+st.markdown("#### Теперь [датасет с предсказанием выплат по кредиту]"
+            "(https://www.kaggle.com/uciml/default-of-credit-card-clients-dataset)")
+st.markdown("Здесь нам необходимо предсказать сможет ли клиент выплатить в следующем месяце ежемесячную норму по "
+            "кредиту")
+
+
+@st.cache(ttl=864000)
+def prepare_credit(credit_df):
+    X = credit_df.drop('default.payment.next.month', axis=1)
+    y = credit_df['default.payment.next.month']
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33, random_state=42)
+
+    return X_train, X_test, y_train, y_test
+
+
+X_train_cre, X_test_cre, y_train_cre, y_test_cre = prepare_credit(credit_df)
+credit_results = {'classifier': ['Log-Reg', 'k-NN', 'SVM', 'Naive-Bayes', 'Random-Forest', 'Grad-Boost'],
+                  'accuracy': [],
+                  'roc auc': [],
+                  'f1': []}
+
+
+def make_clf2_result(ac, ra, f):
+    credit_results['accuracy'].append(ac)
+    credit_results['roc auc'].append(ra)
+    credit_results['f1'].append(f)
+
+
+acc, roc_auc, f1, cm = log_clf(X_train_cre, X_test_cre, y_train_cre, y_test_cre)
+make_clf2_result(acc, roc_auc, f1)
+st.markdown("#### Логистическая регрессия")
+vis_clf_metrics(acc, roc_auc, f1)
+st.pyplot(plot_cm(cm, "flare"))
+
+acc, roc_auc, f1, cm = knn_clf(X_train_cre, X_test_cre, y_train_cre, y_test_cre)
+make_clf2_result(acc, roc_auc, f1)
+st.markdown("#### k-ближайших соседей")
+vis_clf_metrics(acc, roc_auc, f1)
+st.pyplot(plot_cm(cm, "flare"))
+
+acc, roc_auc, f1, cm = svm_clf(X_train_cre, X_test_cre, y_train_cre, y_test_cre)
+make_clf2_result(acc, roc_auc, f1)
+st.markdown("#### Метод опорных векторов")
+vis_clf_metrics(acc, roc_auc, f1)
+st.pyplot(plot_cm(cm, "flare"))
+
+acc, roc_auc, f1, cm = bayes_clf(X_train_cre, X_test_cre, y_train_cre, y_test_cre)
+make_clf2_result(acc, roc_auc, f1)
+st.markdown("#### Наивный Байесовский классификатор")
+vis_clf_metrics(acc, roc_auc, f1)
+st.pyplot(plot_cm(cm, "flare"))
+
+acc, roc_auc, f1, cm = rf_clf(X_train_cre, X_test_cre, y_train_cre, y_test_cre)
+make_clf2_result(acc, roc_auc, f1)
+st.markdown("#### Случайный лес")
+vis_clf_metrics(acc, roc_auc, f1)
+st.pyplot(plot_cm(cm, "flare"))
+
+acc, roc_auc, f1, cm = gb_clf(X_train_cre, X_test_cre, y_train_cre, y_test_cre)
+make_clf2_result(acc, roc_auc, f1)
+st.markdown("#### Градиентный бустинг")
+vis_clf_metrics(acc, roc_auc, f1)
+st.pyplot(plot_cm(cm, "flare"))
+
+st.markdown("##### Сводная таблица по метрикам классификации")
+st.table(credit_results)
+
+st.markdown("### Теперь перейдём к регрессии")
+st.markdown("#### Начнём с [датасета про предсказание стоимости бриллиантов]"
+            "(https://www.kaggle.com/shivam2503/diamonds)")
+
+
+@st.cache(ttl=864000)
+def prepare_diamonds(diam_df):
+    X = pd.concat([diam_df[['depth', 'table', 'x', 'y', 'z']],
+                   pd.get_dummies(diam_df['cut']),
+                   pd.get_dummies(diam_df['color']),
+                   pd.get_dummies(diam_df['clarity'])], axis=1)
+    y = diam_df['price']
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33, random_state=42)
+
+    return X_train, X_test, y_train, y_test
+
+
+X_train_d, X_test_d, y_train_d, y_test_d = prepare_diamonds(diam_df)
+diam_results = {'classifier': ['Lin-Reg', 'k-NN', 'SVM', 'Random-Forest', 'Grad-Boost'],
+                'RMSE': [],
+                'MAE': [],
+                'R^2': []}
+
+
+def vis_reg_metrics(rm, mae, f):
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric(label='RMSE', value=rm)
+    with col2:
+        st.metric(label='MAE', value=mae)
+    with col3:
+        st.metric(label='R^2', value=f)
+
+
+def make_reg1_result(ac, ra, f):
+    diam_results['RMSE'].append(ac)
+    diam_results['MAE'].append(ra)
+    diam_results['R^2'].append(f)
+
+
+@st.cache(ttl=864000)
+def lin(X_train, X_test, y_train, y_test):
+    reg = LinearRegression()
+    reg.fit(X_train, y_train)
+    preds = reg.predict(X_test)
+    return (str(round(rmse(y_test, preds), 3)), str(round(mean_absolute_error(y_test, preds), 3)),
+            str(round(r2_score(y_test, preds), 3)))
+
+
+@st.cache(ttl=864000)
+def knn_reg(X_train, X_test, y_train, y_test):
+    reg = KNeighborsRegressor()
+    reg.fit(X_train, y_train)
+    preds = reg.predict(X_test)
+    return str(round(rmse(y_test, preds), 3)), str(round(mean_absolute_error(y_test, preds), 3)), str(
+        round(r2_score(y_test, preds), 3))
+
+
+@st.cache(ttl=864000)
+def svm_reg(X_train, X_test, y_train, y_test):
+    reg = SVR()
+    reg.fit(X_train, y_train)
+    preds = reg.predict(X_test)
+    return (str(round(rmse(y_test, preds), 3)), str(round(mean_absolute_error(y_test, preds), 3)),
+            str(round(r2_score(y_test, preds), 3)))
+
+
+@st.cache(ttl=864000)
+def rf_reg(X_train, X_test, y_train, y_test):
+    reg = RandomForestRegressor(random_state=42)
+    reg.fit(X_train, y_train)
+    preds = reg.predict(X_test)
+    return (str(round(rmse(y_test, preds), 3)), str(round(mean_absolute_error(y_test, preds), 3)),
+            str(round(r2_score(y_test, preds), 3)))
+
+
+@st.cache(ttl=864000)
+def gb_reg(X_train, X_test, y_train, y_test):
+    reg = CatBoostRegressor(random_seed=42, verbose=False)
+    reg.fit(X_train, y_train)
+    preds = reg.predict(X_test)
+    return (str(round(rmse(y_test, preds), 3)), str(round(mean_absolute_error(y_test, preds), 3)),
+            str(round(r2_score(y_test, preds), 3)), preds)
+
+
+def vis_diam_reg(df, preds):
+    X = pd.concat([diam_df[['depth', 'table', 'x', 'y', 'z']],
+                   pd.get_dummies(diam_df['cut']),
+                   pd.get_dummies(diam_df['color']),
+                   pd.get_dummies(diam_df['clarity'])], axis=1)
+    y = diam_df['price']
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33, random_state=42)
+    yyy = [x for _, x in sorted(zip(X_test['x'], preds))]
+    xxx = [y for y, _ in sorted(zip(X_test['x'], preds))]
+
+    fig = px.scatter(x=X_test['x'], y=y_test, opacity=0.25,
+                     labels=dict(x="Координата X", y="Стоимость"),
+                     title="Предсказание стоимость бриллианта с помощью CatBoostRegressor")
+    fig.add_traces(go.Scatter(x=xxx, y=yyy, name='Предсказанная<br>стоимость'))
+    return fig
+
+
+rms, mae, r_two = lin(X_train_d, X_test_d, y_train_d, y_test_d)
+make_reg1_result(rms, mae, r_two)
+st.markdown("#### Линейная регрессия")
+vis_reg_metrics(rms, mae, r_two)
+
+rms, mae, r_two = knn_reg(X_train_d, X_test_d, y_train_d, y_test_d)
+make_reg1_result(rms, mae, r_two)
+st.markdown("#### k-ближайших соседей")
+vis_reg_metrics(rms, mae, r_two)
+
+rms, mae, r_two = svm_reg(X_train_d, X_test_d, y_train_d, y_test_d)
+make_reg1_result(rms, mae, r_two)
+st.markdown("#### Метод опорных векторов")
+vis_reg_metrics(rms, mae, r_two)
+
+rms, mae, r_two = rf_reg(X_train_d, X_test_d, y_train_d, y_test_d)
+make_reg1_result(rms, mae, r_two)
+st.markdown("#### Случайный лес")
+vis_reg_metrics(rms, mae, r_two)
+
+rms, mae, r_two, predictions = gb_reg(X_train_d, X_test_d, y_train_d, y_test_d)
+make_reg1_result(rms, mae, r_two)
+st.markdown("#### Градиентный бустинг")
+vis_reg_metrics(rms, mae, r_two)
+st.plotly_chart(vis_diam_reg(diam_df, predictions))
+st.markdown("Для задач регрессии довольно трудно построить график, отражающий результаты работы модели. Однако, "
+            "смотря на метрики, мы понимаем, что наши модели машинного обучения довольно хорошо справились с задачей")
+st.table(diam_results)
+
+st.markdown("#### Последний датасет на сегодня - "
+            "[датасет со стоимостью домов](https://www.kaggle.com/harlfoxem/housesalesprediction/version/1)")
+st.markdown("Тут всё очевидно, необходимо по характеристике дома предсказать его стоимость")
+
+
+@st.cache(ttl=864000)
+def prepare_houses(house_df):
+    X = house_df.drop(['id', 'date', 'price'], axis=1)
+    y = house_df['price']
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33, random_state=42)
+
+    return X_train, X_test, y_train, y_test
+
+
+X_train_h, X_test_h, y_train_h, y_test_h = prepare_houses(house_df)
+house_results = {'classifier': ['Lin-Reg', 'k-NN', 'SVM', 'Random-Forest', 'Grad-Boost'],
+                 'RMSE': [],
+                 'MAE': [],
+                 'R^2': []}
+
+
+def make_reg2_result(ac, ra, f):
+    house_results['RMSE'].append(ac)
+    house_results['MAE'].append(ra)
+    house_results['R^2'].append(f)
+
+
+def vis_house_reg(df, preds):
+    X = df.drop(['id', 'date', 'price'], axis=1)
+    y = df['price']
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33, random_state=42)
+    yyy = [x for _, x in sorted(zip(X_test['sqft_living'], preds))]
+    xxx = [y for y, _ in sorted(zip(X_test['sqft_living'], preds))]
+
+    fig = px.scatter(x=X_test['sqft_living'], y=y_test, opacity=0.25,
+                     title="Предсказание стоимость жилья с помощью CatBoostRegressor",
+                     labels=dict(x="Площадь помещения", y="Стоимость"))
+    fig.add_traces(go.Scatter(x=xxx, y=yyy, name='Предсказанная<br>стоимость'))
+    return fig
+
+
+rms, mae, r_two = lin(X_train_h, X_test_h, y_train_h, y_test_h)
+make_reg2_result(rms, mae, r_two)
+st.markdown("#### Линейная регрессия")
+vis_reg_metrics(rms, mae, r_two)
+
+rms, mae, r_two = knn_reg(X_train_h, X_test_h, y_train_h, y_test_h)
+make_reg2_result(rms, mae, r_two)
+st.markdown("#### k-ближайших соседей")
+vis_reg_metrics(rms, mae, r_two)
+
+rms, mae, r_two = svm_reg(X_train_h, X_test_h, y_train_h, y_test_h)
+make_reg2_result(rms, mae, r_two)
+st.markdown("#### Метод опорных векторов")
+vis_reg_metrics(rms, mae, r_two)
+
+rms, mae, r_two = rf_reg(X_train_h, X_test_h, y_train_h, y_test_h)
+make_reg2_result(rms, mae, r_two)
+st.markdown("#### Случайный лес")
+vis_reg_metrics(rms, mae, r_two)
+
+rms, mae, r_two, predictions = gb_reg(X_train_h, X_test_h, y_train_h, y_test_h)
+make_reg2_result(rms, mae, r_two)
+st.markdown("#### Градиентный бустинг")
+vis_reg_metrics(rms, mae, r_two)
+st.plotly_chart(vis_house_reg(house_df, predictions))
+
+st.table(house_results)
+
+st.markdown("### Какие выводы можем сделать?")
+st.markdown("* Мне совсем не нравится метод опорных векторов, долгий, результаты плохие показал...")
+st.markdown("* Бустинги как всегда впереди планеты всей, но на то они и ансамбли. Хотя лес недалеко отстал "
+            "от них")
+st.markdown("* В задаче регрессии, где числовых признаков было больше, чем категориальных, k-NN справился лучше "
+            "линейной регрессии. Метрический алгоритм он и в Африке метрический алгоритм")
+st.markdown("* В одной из двух задач классификации линейные алгоритмы (SVC, Логистическая регрессия) отметили "
+            "все наблюдения на тестовой выборке за нули. Это значит, что для таких алгоритм гораздо важнее "
+            "правильно подбирать порог отсечения")
+st.markdown("* Разумеется, по 2 датасета на классификацию и регрессию совсем мало для полного анализа алгоритмов. "
+            "Но в принципе этого хватает, чтобы уловить какие-то признаки каждого из базовых алгоритмов")
+
+st.markdown("##### Фух, вроде всё... Теперь пойду чилить...")
+col1, col2, col3 = st.columns([2, 3, 3])
+with col1:
+    st.empty()
+with col2:
+    st.image(Image.open("images/love_memoji.png"), caption="From Sanya with <3")
+with col3:
+    st.empty()
